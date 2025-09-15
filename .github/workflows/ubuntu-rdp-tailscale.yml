@@ -1,65 +1,37 @@
-name: Ubuntu RDP/Tailscale
+name: Ubuntu with SSH + Tailscale
 
 on:
   workflow_dispatch:
-    inputs:
-      ts_tailnet:
-        description: "Tailnet name (xyz@gmail.com)"
-        required: true
-      ts_api_key:
-        description: "Tailscale API Key"
-        required: true
-      ts_authkey:
-        description: "Tailscale Auth Key"
-        required: true
-      runtime_minutes:
-        description: "Runtime (minutes)"
-        default: "120"
-        required: true
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 360
-
+  run-vm:
+    runs-on: ubuntu-latest
     steps:
-      - name: 🟢 Update & install prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl gnupg lsb-release jq
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: ⚙️ Install Tailscale on Ubuntu
+      - name: Install OpenSSH server
         run: |
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/$(lsb_release -cs).noarmor.gpg |
-            sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg > /dev/null
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/$(lsb_release -cs).tailscale-keyring.list |
-            sudo tee /etc/apt/sources.list.d/tailscale.list
-          sudo apt-get update
-          sudo apt-get install -y tailscale
-          sudo systemctl enable --now tailscaled
-          tailscale version
+          sudo apt update
+          sudo apt install -y openssh-server
+          sudo systemctl enable ssh
+          sudo systemctl start ssh
 
-      - name: 🔗 Connect to Tailscale
+      - name: Add your SSH public key
         run: |
-          sudo tailscale up --authkey "${{ github.event.inputs.ts_authkey }}" --hostname bullet --accept-routes --accept-dns=false
-          echo "IPv4 address:"
-          sudo tailscale ip -4
+          mkdir -p ~/.ssh
+          echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCxwyupFObqMZ377b0qim9ayYZv4mTZCtEhfyt2U4bMrEVMHiRHFToPm2FMISI5D2Yv+0uoGgBg1gq7bPHSYajeNtabvi5/lAO9GG9HeokRR3VO/zodB4OeOY7PL5q76ZahEhAvCun9GKQURbgvMPAvsqgIaDG3aBXIdkD1upM3rHerECCd36ayUl15lK0eTD0yURw5SGOmOwB4n4t2FgJHWUtzlhJc+UaUSByAAfy2z4fnRiOBNE8oE/kJVs9agPHobTzEOZtC379rjv8ZxvGKQHiWNBwBazqVLfpk03qStFjiqqOrEMnC/m+zq4/fQFeKGc1fpxWoxJ+1blrQ8ZMr" >> ~/.ssh/authorized_keys
+          chmod 700 ~/.ssh
+          chmod 600 ~/.ssh/authorized_keys
 
-      - name: 🧹 Purge old Tailscale nodes (optional)
+      - name: Install Tailscale
         run: |
-          curl -s -H "Authorization: Bearer ${{ github.event.inputs.ts_api_key }}" \
-            "https://api.tailscale.com/api/v2/tailnet/${{ github.event.inputs.ts_tailnet }}/devices" | jq '.devices[] | select(.hostname|test("bullet";"i")) | .id' -r |
-          while read id; do
-            curl -s -X DELETE -H "Authorization: Bearer ${{ github.event.inputs.ts_api_key }}" \
-              "https://api.tailscale.com/api/v2/device/$id" || true
-          done
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTHKEY }} --ssh
 
-      - name: ⏳ Keep alive
+      - name: Show SSH info
         run: |
-          mins=${{ github.event.inputs.runtime_minutes }}
-          end=$(( $(date +%s) + mins*60 ))
-          while [ $(date +%s) -lt $end ]; do
-            left=$(( (end - $(date +%s))/60 ))
-            echo "Ubuntu session alive... ($left min left)"
-            sleep 60
-          done
+          echo "=== SSH Server is running ==="
+          echo "Use the following IP to connect from Termius:"
+          tailscale ip -4
+          echo "Username: runner"
