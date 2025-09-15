@@ -84,22 +84,41 @@ jobs:
           echo "Hostname: $(hostname)"
           echo "External IP: $(curl -s ifconfig.me || echo 'Unable to fetch')"
 
-      - name: 🖥️ Install XRDP (Optional RDP Server)
+      - name: 🔑 Setup SSH Access for Termius
         run: |
-          echo "Installing XRDP for RDP access..."
-          sudo apt-get install -y xrdp ubuntu-desktop-minimal
-          sudo systemctl enable xrdp
-          sudo systemctl start xrdp
+          echo "Setting up SSH access..."
           
-          # Create user for RDP
-          sudo useradd -m -s /bin/bash rdpuser
-          echo "rdpuser:password123" | sudo chpasswd
-          sudo usermod -aG sudo rdpuser
+          # Enable SSH service
+          sudo systemctl enable ssh
+          sudo systemctl start ssh
           
-          echo "✅ XRDP installed. You can RDP to this machine using:"
-          echo "   Username: rdpuser"
-          echo "   Password: password123"
-          echo "   IP: $(sudo tailscale ip -4)"
+          # Create a dedicated user for SSH
+          sudo useradd -m -s /bin/bash vpsuser
+          echo "vpsuser:VPS@123456" | sudo chpasswd
+          sudo usermod -aG sudo vpsuser
+          
+          # Configure SSH for better compatibility
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config
+          
+          # Restart SSH service
+          sudo systemctl restart ssh
+          
+          # Install commonly used tools
+          sudo apt-get update -qq
+          sudo apt-get install -y htop neofetch tree git nano vim curl wget unzip
+          
+          echo "✅ SSH setup completed!"
+          echo ""
+          echo "=== Termius Connection Details ==="
+          echo "Host/IP: $(sudo tailscale ip -4)"
+          echo "Port: 22"
+          echo "Username: vpsuser"
+          echo "Password: VPS@123456"
+          echo ""
+          echo "=== Alternative root access ==="
+          echo "You can use 'sudo su -' to become root"
 
       - name: 📌 System Information
         run: |
@@ -129,9 +148,18 @@ jobs:
           echo "⚠️  Do not close this workflow while using the system!"
           echo ""
           echo "=== Access Information ==="
-          echo "Tailscale IP: $(sudo tailscale ip -4)"
-          echo "SSH: ssh runner@$(sudo tailscale ip -4)"
-          echo "RDP: $(sudo tailscale ip -4):3389 (rdpuser/password123)"
+          echo "🖥️  SSH Connection Details:"
+          echo "   Host: $(sudo tailscale ip -4)"
+          echo "   Port: 22"
+          echo "   Username: vpsuser"
+          echo "   Password: VPS@123456"
+          echo ""
+          echo "📱 Termius App Setup:"
+          echo "   1. Open Termius app"
+          echo "   2. Add new host: $(sudo tailscale ip -4)"
+          echo "   3. Set username: vpsuser"
+          echo "   4. Set password: VPS@123456"
+          echo "   5. Connect and enjoy terminal access!"
           echo ""
           
           # Create a more informative keep-alive loop
