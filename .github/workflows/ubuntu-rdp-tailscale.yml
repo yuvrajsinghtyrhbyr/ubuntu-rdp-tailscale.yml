@@ -1,37 +1,155 @@
-name: Ubuntu with SSH + Tailscale
+name: Ubuntu RDP/Tailscale
 
 on:
   workflow_dispatch:
+    inputs:
+      ts_tailnet:
+        description: "Tailscale tailnet (e.g. you@gmail.com)"
+        required: true
+      ts_api_key:
+        description: "Tailscale API key (device admin)"
+        required: true
+      ts_authkey:
+        description: "Tailscale auth key (reusable/ephemeral)"
+        required: true
+      runtime_minutes:
+        description: "Runtime in minutes (max 360)"
+        required: false
+        default: "120"
 
 jobs:
-  run-vm:
-    runs-on: ubuntu-latest
+  rdp:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 370
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install OpenSSH server
+      - name: 🟢 Update & install prerequisites
         run: |
-          sudo apt update
-          sudo apt install -y openssh-server
-          sudo systemctl enable ssh
-          sudo systemctl start ssh
+          sudo apt-get update -qq
+          sudo apt-get install -y curl gnupg lsb-release jq
 
-      - name: Add your SSH public key
+      - name: 🧹 PURGE old Tailscale nodes containing 'bullet'
+        continue-on-error: true
         run: |
-          mkdir -p ~/.ssh
-          echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCxwyupFObqMZ377b0qim9ayYZv4mTZCtEhfyt2U4bMrEVMHiRHFToPm2FMISI5D2Yv+0uoGgBg1gq7bPHSYajeNtabvi5/lAO9GG9HeokRR3VO/zodB4OeOY7PL5q76ZahEhAvCun9GKQURbgvMPAvsqgIaDG3aBXIdkD1upM3rHerECCd36ayUl15lK0eTD0yURw5SGOmOwB4n4t2FgJHWUtzlhJc+UaUSByAAfy2z4fnRiOBNE8oE/kJVs9agPHobTzEOZtC379rjv8ZxvGKQHiWNBwBazqVLfpk03qStFjiqqOrEMnC/m+zq4/fQFeKGc1fpxWoxJ+1blrQ8ZMr" >> ~/.ssh/authorized_keys
-          chmod 700 ~/.ssh
-          chmod 600 ~/.ssh/authorized_keys
+          echo "Cleaning up old nodes..."
+          devices=$(curl -s -H "Authorization: Bearer ${{ github.event.inputs.ts_api_key }}" \
+            "https://api.tailscale.com/api/v2/tailnet/${{ github.event.inputs.ts_tailnet }}/devices" \
+            | jq -r '.devices[]? | select(.hostname?|test("bullet")) | .id' 2>/dev/null || echo "")
+          
+          if [ -n "$devices" ]; then
+            echo "$devices" | xargs -r -n1 -I{} curl -s -X DELETE \
+              -H "Authorization: Bearer ${{ github.event.inputs.ts_api_key }}" \
+              "https://api.tailscale.com/api/v2/device/{}"
+            echo "Cleaned up old nodes"
+          else
+            echo "No old nodes to clean up"
+          fi
 
-      - name: Install Tailscale
+      - name: ⚙️ Install Tailscale on Ubuntu
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTHKEY }} --ssh
+          # Add Tailscale's GPG key
+          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg \
+            | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg > /dev/null
+          
+          # Add the tailscale repository
+          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list \
+            | sudo tee /etc/apt/sources.list.d/tailscale.list
+          
+          # Install Tailscale
+          sudo apt-get update -qq
+          sudo apt-get install -y tailscale
+          sudo systemctl enable --now tailscaled
+          
+          # Wait for tailscaled to start
+          sleep 5
 
-      - name: Show SSH info
+      - name: 🔗 Tailscale up (hostname=bullet) + show details
         run: |
-          echo "=== SSH Server is running ==="
-          echo "Use the following IP to connect from Termius:"
-          tailscale ip -4
-          echo "Username: runner"
+          echo "Connecting to Tailscale..."
+          sudo tailscale up --authkey "${{ github.event.inputs.ts_authkey }}" \
+            --hostname "bullet-$(date +%s)" \
+            --accept-routes \
+            --accept-dns=false \
+            --timeout=30s
+          
+          echo "✅ Tailscale connected successfully!"
+          echo ""
+          echo "=== Tailscale Status ==="
+          sudo tailscale status
+          echo ""
+          echo "=== Network Details ==="
+          echo "Tailscale IPv4: $(sudo tailscale ip -4)"
+          echo "Tailscale IPv6: $(sudo tailscale ip -6 2>/dev/null || echo 'Not available')"
+          echo ""
+          echo "=== System Info ==="
+          echo "Hostname: $(hostname)"
+          echo "External IP: $(curl -s ifconfig.me || echo 'Unable to fetch')"
+
+      - name: 🖥️ Install XRDP (Optional RDP Server)
+        run: |
+          echo "Installing XRDP for RDP access..."
+          sudo apt-get install -y xrdp ubuntu-desktop-minimal
+          sudo systemctl enable xrdp
+          sudo systemctl start xrdp
+          
+          # Create user for RDP
+          sudo useradd -m -s /bin/bash rdpuser
+          echo "rdpuser:password123" | sudo chpasswd
+          sudo usermod -aG sudo rdpuser
+          
+          echo "✅ XRDP installed. You can RDP to this machine using:"
+          echo "   Username: rdpuser"
+          echo "   Password: password123"
+          echo "   IP: $(sudo tailscale ip -4)"
+
+      - name: 📌 System Information
+        run: |
+          echo "=== Ubuntu System Information ==="
+          lsb_release -a
+          echo ""
+          echo "=== Current User ==="
+          echo "Running as: $(whoami)"
+          echo "Home directory: $HOME"
+          echo ""
+          echo "=== Available Resources ==="
+          echo "CPU: $(nproc) cores"
+          echo "Memory: $(free -h | grep Mem | awk '{print $2}')"
+          echo "Disk: $(df -h / | tail -1 | awk '{print $4}') free"
+          echo ""
+          echo "=== Network Interfaces ==="
+          ip addr show | grep -E "inet |tailscale"
+          echo ""
+          echo "✅ System is ready!"
+
+      - name: ⏳ Keep alive for specified runtime
+        run: |
+          runtime=${{ github.event.inputs.runtime_minutes }}
+          runtime=${runtime:-120}
+          
+          echo "🕒 Keeping workflow alive for $runtime minutes..."
+          echo "⚠️  Do not close this workflow while using the system!"
+          echo ""
+          echo "=== Access Information ==="
+          echo "Tailscale IP: $(sudo tailscale ip -4)"
+          echo "SSH: ssh runner@$(sudo tailscale ip -4)"
+          echo "RDP: $(sudo tailscale ip -4):3389 (rdpuser/password123)"
+          echo ""
+          
+          # Create a more informative keep-alive loop
+          end_time=$(($(date +%s) + runtime * 60))
+          while [ $(date +%s) -lt $end_time ]; do
+            remaining=$((end_time - $(date +%s)))
+            hours=$((remaining / 3600))
+            minutes=$(((remaining % 3600) / 60))
+            echo "⏱️  Time remaining: ${hours}h ${minutes}m ($(date))"
+            sleep 300  # Update every 5 minutes
+          done
+          
+          echo "🔴 Runtime expired. Workflow ending..."
+
+      - name: 🧹 Cleanup on completion
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "Cleaning up Tailscale connection..."
+          sudo tailscale down || true
+          echo "✅ Cleanup completed"
