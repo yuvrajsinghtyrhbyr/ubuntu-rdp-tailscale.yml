@@ -1,0 +1,52 @@
+name: Ubuntu RDP/Tailscale
+
+on:
+  workflow_dispatch:
+    inputs:
+      ts_tailnet:
+        description: "Tailnet name (xyz@gmail.com)"
+        required: true
+      ts_api_key:
+        description: "Tailscale API key"
+        required: true
+      ts_authkey:
+        description: "Tailscale Auth Key"
+        required: true
+      runtime_minutes:
+        description: "Runtime (minutes)"
+        default: "120"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+    - name: Purge old Tailscale nodes
+      run: |
+        curl -s -H "Authorization: Bearer ${{ github.event.inputs.ts_api_key }}" \
+        "https://api.tailscale.com/api/v2/tailnet/${{ github.event.inputs.ts_tailnet }}/devices" \
+        | jq -r '.devices[] | select(.hostname|test("bullet")) | .id' \
+        | xargs -r -n1 -I{} curl -s -X DELETE \
+        -H "Authorization: Bearer ${{ github.event.inputs.ts_api_key }}" \
+        "https://api.tailscale.com/api/v2/device/{}"
+
+    - name: Install Tailscale
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y tailscale
+        sudo systemctl enable --now tailscaled
+        sudo tailscale up --authkey ${{ github.event.inputs.ts_authkey }} --hostname bullet
+
+    - name: Show Linux info
+      run: |
+        echo "Ubuntu version:"
+        lsb_release -a
+        echo "Running as:"
+        whoami
+        echo "You have root via sudo."
+
+    - name: Keep alive for runtime
+      run: |
+        sleep $(( ${{ github.event.inputs.runtime_minutes }} * 60 ))
